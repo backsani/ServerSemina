@@ -4,11 +4,12 @@
 #include <wchar.h>
 #include <iostream>
 #include <thread>
-#include <vector>
-#include <future>
+#include <mutex>
+
+std::mutex mtx;
 
 ULONGLONG myGetFileSize(HANDLE hFile);
-VOID ReadThread(HANDLE hFile, HANDLE tempFile, ULONGLONG fPointer, DWORD ReadSize, std::promise<bool>&& promise);
+VOID ReadThread(HANDLE hFile, HANDLE tempFile, ULONGLONG fPointer, DWORD ReadSize);
 
 void _tmain(void) {
     DWORD value[30] = { 0 };
@@ -21,7 +22,7 @@ void _tmain(void) {
     }
 
     // Data.txt 파일을 생성 또는 열기
-    HANDLE hFile = CreateFile(_T("Data.txt"), GENERIC_READ | GENERIC_WRITE, 0, NULL, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
+    HANDLE hFile = CreateFile(_T("Data.txt"), GENERIC_READ | GENERIC_WRITE, FILE_SHARE_READ, NULL, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
     if (hFile == INVALID_HANDLE_VALUE) {
         std::cout << "Create File failed, code : " << GetLastError() << std::endl;
         return;
@@ -31,7 +32,7 @@ void _tmain(void) {
     }
 
     // TempData.txt 파일을 임시 파일로 생성
-    HANDLE tempFile = CreateFile(_T("TempData.txt"), GENERIC_READ | GENERIC_WRITE, 0, NULL, CREATE_ALWAYS, FILE_ATTRIBUTE_TEMPORARY | FILE_FLAG_DELETE_ON_CLOSE, NULL);
+    HANDLE tempFile = CreateFile(_T("TempData.txt"), GENERIC_READ | GENERIC_WRITE, FILE_SHARE_WRITE, NULL, CREATE_ALWAYS, FILE_ATTRIBUTE_TEMPORARY | FILE_FLAG_DELETE_ON_CLOSE, NULL);
     if (tempFile == INVALID_HANDLE_VALUE) {
         std::cout << "Create tempFile failed, code : " << GetLastError() << std::endl;
         return;
@@ -41,7 +42,7 @@ void _tmain(void) {
     }
 
     // value 배열을 텍스트 형식으로 변환하여 buffer에 저장
-    wchar_t buffer[256];
+    wchar_t buffer[256] = { 0 };
     int offset = 0;
     for (int i = 0; i < 30; i++) {
         offset += swprintf(buffer + offset, sizeof(buffer) / sizeof(wchar_t) - offset, L"%d ", value[i]);
@@ -64,53 +65,50 @@ void _tmain(void) {
     ULONGLONG fSize = myGetFileSize(hFile);
     DWORD readSize = (fSize / 3);
 
-    std::promise<bool> promise[3];
-    std::future<bool> future[3];
-    for (int i = 0; i < 3; i++) {
-        future[i] = promise[i].get_future();
-    }
-    //std::vector<std::thread> thread;
+    std::thread t1(ReadThread, hFile, tempFile, 0, readSize);
+    std::thread t2(ReadThread, hFile, tempFile, fSize / 3, readSize);
+    std::thread t3(ReadThread, hFile, tempFile, (fSize / 3) * 2, readSize);
 
-    std::thread t1(ReadThread, hFile, tempFile, 0, readSize, std::move(promise[0]));
-    std::thread t2(ReadThread, hFile, tempFile, fSize / 3, readSize, std::move(promise[1]));
-    std::thread t3(ReadThread, hFile, tempFile, (fSize / 3) * 2, readSize, std::move(promise[2]));
-    t1.detach();
-    t2.detach();
-    t3.detach();
-
-    /*t1.join();
+    t1.join();
     t2.join();
-    t3.join();*/
+    t3.join();
 
-    for (int i = 0; i < 3; i++) {
-        if (!future[i].get()) {
-            //ReadThread 오류 발생
-            CloseHandle(hFile);
-            CloseHandle(tempFile);
-            return;
-        }
-    }  
 
-    Sleep(5000);
+    // 임시 파일에서 데이터 읽기 전에 FlushFileBuffers 호출
+    if (!FlushFileBuffers(tempFile)) {
+        std::cout << "FlushFileBuffers failed, code: " << GetLastError() << std::endl;
+        CloseHandle(hFile);
+        CloseHandle(tempFile);
+        return;
+    }
+ 
+    LARGE_INTEGER zero;
+    zero.QuadPart = 0;
+    if (!SetFilePointerEx(tempFile, zero, NULL, FILE_BEGIN)) {
+        std::cout << "SetFilePointerEx failed, code: " << GetLastError() << std::endl;
+        CloseHandle(hFile);
+        CloseHandle(tempFile);
+        return;
+    }
 
     DWORD bytesRead;
-    wchar_t tempBuffer[256];
+    wchar_t tempBuffer[256] = { 0 };
 
-    if (!ReadFile(tempFile, tempBuffer, (fSize * sizeof(wchar_t)), &bytesRead, NULL)) {
+    if (!ReadFile(tempFile, tempBuffer, (fSize), &bytesRead, NULL)) {
         std::cout << "temp 파일 읽기 실패" << std::endl;
         CloseHandle(hFile);
         CloseHandle(tempFile);
         return;
     }
 
-    std::wcout << "읽은 파일 데이터 : " << tempBuffer << " 읽은 크기 : " << bytesRead << '\n' << std::endl;
+    std::wcout << "읽은 파일 데이터 : " << tempBuffer << " 읽은 크기 : " << bytesRead << std::endl;
 
     // 파일 핸들 닫기
     CloseHandle(hFile);
     CloseHandle(tempFile);
 }
 
-VOID ReadThread(HANDLE hFile, HANDLE tempFile, ULONGLONG fPointer, DWORD ReadSize, std::promise<bool> && promise) {
+VOID ReadThread(HANDLE hFile, HANDLE tempFile, ULONGLONG fPointer, DWORD ReadSize) {
     //파일 포인터를 이동할 오프셋
     LARGE_INTEGER liDistanceToMove;
     liDistanceToMove.QuadPart = fPointer;
@@ -120,8 +118,6 @@ VOID ReadThread(HANDLE hFile, HANDLE tempFile, ULONGLONG fPointer, DWORD ReadSiz
     LARGE_INTEGER liNewFilePointer;
     if (!SetFilePointerEx(hFile, liDistanceToMove, &liNewFilePointer, FILE_BEGIN)) {
         std::cout << "파일 포인터 이동 실패" << std::endl;
-        // 파일 핸들 닫기
-        promise.set_value(false);
         return;
     }
     //(sizeof(buffer) - sizeof(wchar_t)) / 3
@@ -129,40 +125,29 @@ VOID ReadThread(HANDLE hFile, HANDLE tempFile, ULONGLONG fPointer, DWORD ReadSiz
     DWORD bytesRead;
     if (!ReadFile(hFile, buffer, ReadSize, &bytesRead, NULL)) {
         std::cout << "파일 읽기 실패" << std::endl;
-        promise.set_value(false);
         return;
     }
 
     if (!FlushFileBuffers(hFile)) {
         std::cout << "FlushFileBuffers failed , code : " << GetLastError() << std::endl;
+        
     }
     
     buffer[bytesRead / sizeof(wchar_t)] = L'\0';
+
+    std::unique_lock<std::mutex> lock(mtx);
 
     std::wcout << "읽은 데이터 : " << buffer << std::endl;
 
     if (!SetFilePointerEx(tempFile, liDistanceToMove, &liNewFilePointer, FILE_BEGIN)) {
         std::cout << "파일 포인터 이동 실패" << std::endl;
-        // 파일 핸들 닫기
-        promise.set_value(false);
         return;
     }
 
     DWORD dwWroteBytes;
 
-    // 잠금을 위한 OVERLAPPED 구조체 초기화
-    OVERLAPPED ol = { 0 };
-    ol.Offset = 0;
-    ol.OffsetHigh = 0;
-
-    if (!LockFileEx(hFile, LOCKFILE_EXCLUSIVE_LOCK, 0, ReadSize * 3, 0, &ol)) {
-        std::cerr << "LockFileEx failed, code: " << GetLastError() << std::endl;
-        CloseHandle(hFile);
-        return ;
-    }
-
     // buffer의 내용을 파일에 작성
-    BOOL blsOK = WriteFile(hFile, buffer, bytesRead, &dwWroteBytes, NULL);
+    BOOL blsOK = WriteFile(tempFile, buffer, bytesRead, &dwWroteBytes, NULL);
     if (!blsOK) {
         std::cout << "데이터 작성 실패, code: \n" << GetLastError() << std::endl;
         CloseHandle(hFile);
@@ -173,14 +158,9 @@ VOID ReadThread(HANDLE hFile, HANDLE tempFile, ULONGLONG fPointer, DWORD ReadSiz
         std::cout << "데이터 복사 성공, 작성한 데이터 크기: " << dwWroteBytes << " bytes\n" << std::endl;
     }
 
-    // 잠금 해제
-    if (!UnlockFileEx(hFile, 0, ReadSize * 3, 0, &ol)) {
-        std::cerr << "UnlockFileEx failed, code: " << GetLastError() << std::endl;
-        CloseHandle(hFile);
-        return ;
-    }
+    lock.unlock();
 
-    promise.set_value(true);
+
     return;
 }
 

@@ -13,10 +13,13 @@
       <UniqueIdentifier>{67DA6AB6-F800-4c08-8B7A-83BB121AAD01}</UniqueIdentifier>
       <Extensions>rc;ico;cur;bmp;dlg;rc2;rct;bin;rgs;gif;jpg;jpeg;jpe;resx;tiff;tif;png;wav;mfcribbon-ms</Extensions>
     </Filter>
+    <Filter Include="소스 파일\FileProject">
+      <UniqueIdentifier>{f9edd6e0-5749-4151-bc60-38a402ea618c}</UniqueIdentifier>
+    </Filter>
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="FileEx.cpp">
-      <Filter>소스 파일</Filter>
+      <Filter>소스 파일\FileProject</Filter>
     </ClCompile>
   </ItemGroup>
 </Project>
